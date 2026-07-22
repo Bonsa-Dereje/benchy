@@ -340,7 +340,14 @@ async fn benchmark_apps(
         return Err("apps must not be empty".to_string());
     }
 
-    let api_key = std::env::var("GROQ_API_KEY").unwrap_or_default();
+    let api_key = std::env::var("GROQ_API_KEY")
+        .or_else(|_| std::env::var("GROQ_KEY"))
+        .unwrap_or_else(|_| {
+            load_env();
+            std::env::var("GROQ_API_KEY")
+                .or_else(|_| std::env::var("GROQ_KEY"))
+                .unwrap_or_default()
+        });
     if api_key.trim().is_empty() {
         eprintln!(
             "[benchmark_apps] GROQ_API_KEY is not set (checked process env + .env next to the app) — skipping AI call"
@@ -428,13 +435,34 @@ async fn benchmark_apps(
     })
 }
 
+fn load_env() {
+    let _ = dotenvy::dotenv();
+    let _ = dotenvy::from_filename("src-tauri/.env");
+    let _ = dotenvy::from_filename(".env");
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(mut dir) = exe_path.parent() {
+            loop {
+                let env_file = dir.join(".env");
+                if env_file.exists() {
+                    let _ = dotenvy::from_path(&env_file);
+                }
+                let src_tauri_env = dir.join("src-tauri").join(".env");
+                if src_tauri_env.exists() {
+                    let _ = dotenvy::from_path(&src_tauri_env);
+                }
+                match dir.parent() {
+                    Some(parent) => dir = parent,
+                    None => break,
+                }
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Loads GROQ_API_KEY from a .env file next to the app during dev.
-    // In a packaged build there's no guaranteed cwd, so for production set
-    // GROQ_API_KEY as a real environment variable at launch, or bundle a
-    // resource file and point dotenvy at it with `dotenvy::from_path(..)`.
-    dotenvy::dotenv().ok();
+    load_env();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
