@@ -13,6 +13,23 @@ export const DEPT_ICONS = {
   engineering: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M5.34 18.66l-1.41 1.41M20 12h-2M6 12H4M19.07 19.07l-1.41-1.41M5.34 5.34L3.93 3.93M12 20v-2M12 6V4"/></svg>`,
 }
 
+// Icons for the specs readout + status states. Same stroke convention as
+// DEPT_ICONS above (currentColor, 1.7 stroke) so everything reads as one set.
+export const SPEC_ICONS = {
+  host: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="12" rx="1.5"/><line x1="8" y1="20" x2="16" y2="20"/><line x1="12" y1="16" x2="12" y2="20"/></svg>`,
+  cpu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="7" y="7" width="10" height="10" rx="1.2"/><rect x="10.3" y="10.3" width="3.4" height="3.4"/><path d="M9 2v3M12 2v3M15 2v3M9 19v3M12 19v3M15 19v3M2 9h3M2 12h3M2 15h3M19 9h3M19 12h3M19 15h3"/></svg>`,
+  ram: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="9" rx="1.2"/><path d="M6 14v4M9.4 14v4M12.8 14v4M16.2 14v4M19 14v4"/></svg>`,
+  gpu: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="2" y="7" width="20" height="10" rx="1.2"/><circle cx="15.5" cy="12" r="2.6"/><path d="M5 7V5M9 7V5"/><line x1="5" y1="17" x2="5" y2="19"/></svg>`,
+  storage: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="1.5"/><line x1="3" y1="14" x2="21" y2="14"/><circle cx="7.3" cy="17" r="1" fill="currentColor" stroke="none"/><line x1="11" y1="17" x2="17" y2="17"/></svg>`,
+}
+
+// Small status/utility icons used around loading + fallback states.
+export const UI_ICONS = {
+  spark: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2.5l1.9 6.6 6.6 1.9-6.6 1.9L12 19.5l-1.9-6.6L3.5 11l6.6-1.9z"/></svg>`,
+  alert: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7.5" x2="12" y2="13"/><circle cx="12" cy="16.3" r="0.9" fill="currentColor" stroke="none"/></svg>`,
+  check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12.5 9.5 18 20 6"/></svg>`,
+}
+
 export const APP_ICONS = {
   'Adobe Photoshop': 'https://www.google.com/s2/favicons?sz=32&domain=adobe.com',
   Figma: 'https://www.google.com/s2/favicons?sz=32&domain=figma.com',

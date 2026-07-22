@@ -155,11 +155,21 @@ pub struct BenchmarkResponse {
     // "ai" if Groq answered, "fallback" if we used the local heuristic
     // (no key set, or every model call failed)
     pub estimator: String,
+    // Human-readable reason the AI estimator wasn't used, when estimator ==
+    // "fallback". None when estimator == "ai". Surfaced in the UI and
+    // logged to stderr so a broken key / deprecated model / rate limit is
+    // obvious instead of silently showing made-up-looking numbers.
+    pub error_detail: Option<String>,
 }
 
 const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL: &str = "llama-3.3-70b-versatile";
-const GROQ_FALLBACKS: [&str; 2] = ["llama-3.1-8b-instant", "openai/gpt-oss-20b"];
+// NOTE: llama-3.3-70b-versatile and llama-3.1-8b-instant were deprecated by
+// Groq (announced 2026-06-17) and now return a `model_decommissioned` error
+// on every call — that's what was making this look like "AI unavailable"
+// even with a valid key. Pointed at the models Groq recommends instead:
+// https://console.groq.com/docs/deprecations
+const GROQ_MODEL: &str = "openai/gpt-oss-120b";
+const GROQ_FALLBACKS: [&str; 2] = ["openai/gpt-oss-20b", "qwen/qwen3.6-27b"];
 
 const PERF_SYSTEM_PROMPT: &str = "\
 You are a PC performance estimator. Given one machine's real hardware specs \
@@ -226,7 +236,22 @@ fn strip_to_json(content: &str) -> String {
     text
 }
 
+// Shows just enough of the key to confirm the right one loaded, without
+// dumping the secret into logs.
+fn mask_key(k: &str) -> String {
+    if k.len() <= 8 {
+        return "*".repeat(k.len());
+    }
+    format!("{}…{}", &k[..4], &k[k.len() - 4..])
+}
+
 async fn call_groq(model: &str, api_key: &str, user_text: &str) -> Result<String, String> {
+    eprintln!(
+        "[benchmark_apps] → calling Groq model={} key={}",
+        model,
+        mask_key(api_key)
+    );
+
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "model": model,
@@ -244,19 +269,37 @@ async fn call_groq(model: &str, api_key: &str, user_text: &str) -> Result<String
         .json(&body)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let msg = format!("network error calling Groq: {}", e);
+            eprintln!("[benchmark_apps] ✗ {} ({})", msg, model);
+            msg
+        })?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Groq HTTP {}: {}", status, text));
+        let msg = format!("Groq HTTP {} ({}): {}", status.as_u16(), model, text);
+        eprintln!("[benchmark_apps] ✗ {}", msg);
+        return Err(msg);
     }
 
-    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    json["choices"][0]["message"]["content"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("Unexpected Groq response shape: {}", json))
+    let json: serde_json::Value = resp.json().await.map_err(|e| {
+        let msg = format!("couldn't parse Groq response as JSON: {}", e);
+        eprintln!("[benchmark_apps] ✗ {} ({})", msg, model);
+        msg
+    })?;
+
+    match json["choices"][0]["message"]["content"].as_str() {
+        Some(s) => {
+            eprintln!("[benchmark_apps] ✓ {} responded ({} chars)", model, s.len());
+            Ok(s.to_string())
+        }
+        None => {
+            let msg = format!("unexpected Groq response shape: {}", json);
+            eprintln!("[benchmark_apps] ✗ {} ({})", msg, model);
+            Err(msg)
+        }
+    }
 }
 
 // Crude no-AI fallback so the UI always shows *something* if the key is
@@ -299,11 +342,20 @@ async fn benchmark_apps(
 
     let api_key = std::env::var("GROQ_API_KEY").unwrap_or_default();
     if api_key.trim().is_empty() {
+        eprintln!(
+            "[benchmark_apps] GROQ_API_KEY is not set (checked process env + .env next to the app) — skipping AI call"
+        );
         return Ok(BenchmarkResponse {
             results: local_heuristic(&specs, &apps),
             estimator: "fallback".to_string(),
+            error_detail: Some("GROQ_API_KEY isn't set, so the AI estimator was skipped.".to_string()),
         });
     }
+    eprintln!(
+        "[benchmark_apps] GROQ_API_KEY found ({}), evaluating {} app(s)",
+        mask_key(&api_key),
+        apps.len()
+    );
 
     let spec_summary = build_spec_summary(&specs);
     let mut user_text = format!("Machine specs:\n{}\n", spec_summary);
@@ -342,9 +394,15 @@ async fn benchmark_apps(
                                         results.insert(k, v);
                                     }
                                 }
+                                eprintln!(
+                                    "[benchmark_apps] ✓ using AI results from {} for {} app(s)",
+                                    model,
+                                    apps.len()
+                                );
                                 return Ok(BenchmarkResponse {
                                     results,
                                     estimator: "ai".to_string(),
+                                    error_detail: None,
                                 });
                             }
                         }
@@ -361,10 +419,12 @@ async fn benchmark_apps(
         }
     }
 
-    eprintln!("[benchmark_apps] all Groq models failed: {:?}", last_err);
+    let reason = last_err.unwrap_or_else(|| "all Groq models failed for an unknown reason".to_string());
+    eprintln!("[benchmark_apps] ✗ all Groq models failed, falling back: {}", reason);
     Ok(BenchmarkResponse {
         results: local_heuristic(&specs, &apps),
         estimator: "fallback".to_string(),
+        error_detail: Some(reason),
     })
 }
 
