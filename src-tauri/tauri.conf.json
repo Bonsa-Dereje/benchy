@@ -13,8 +13,10 @@
     "windows": [
       {
         "title": "benchy",
-        "width": 800,
-        "height": 600
+        "width": 525,
+        "height": 647,
+        "resizable": false,
+        "center": true
       }
     ],
     "security": {
