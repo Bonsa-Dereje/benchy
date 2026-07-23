@@ -162,7 +162,11 @@ pub struct BenchmarkResponse {
     pub error_detail: Option<String>,
 }
 
-const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
+// Routed through our own Vercel proxy (api/chat.js) instead of calling Groq
+// directly. The proxy holds GROQ_API_KEY server-side, so the client no
+// longer needs a local key at all — it just forwards the same OpenAI-shaped
+// chat-completions body and Vercel attaches the Groq Authorization header.
+const GROQ_ENDPOINT: &str = "https://groq-api-sand.vercel.app/api/chat";
 // NOTE: llama-3.3-70b-versatile and llama-3.1-8b-instant were deprecated by
 // Groq (announced 2026-06-17) and now return a `model_decommissioned` error
 // on every call — that's what was making this look like "AI unavailable"
@@ -236,21 +240,8 @@ fn strip_to_json(content: &str) -> String {
     text
 }
 
-// Shows just enough of the key to confirm the right one loaded, without
-// dumping the secret into logs.
-fn mask_key(k: &str) -> String {
-    if k.len() <= 8 {
-        return "*".repeat(k.len());
-    }
-    format!("{}…{}", &k[..4], &k[k.len() - 4..])
-}
-
-async fn call_groq(model: &str, api_key: &str, user_text: &str) -> Result<String, String> {
-    eprintln!(
-        "[benchmark_apps] → calling Groq model={} key={}",
-        model,
-        mask_key(api_key)
-    );
+async fn call_groq(model: &str, user_text: &str) -> Result<String, String> {
+    eprintln!("[benchmark_apps] → calling proxy model={}", model);
 
     let client = reqwest::Client::new();
     let body = serde_json::json!({
@@ -265,12 +256,11 @@ async fn call_groq(model: &str, api_key: &str, user_text: &str) -> Result<String
 
     let resp = client
         .post(GROQ_ENDPOINT)
-        .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
         .map_err(|e| {
-            let msg = format!("network error calling Groq: {}", e);
+            let msg = format!("network error calling proxy: {}", e);
             eprintln!("[benchmark_apps] ✗ {} ({})", msg, model);
             msg
         })?;
@@ -340,27 +330,8 @@ async fn benchmark_apps(
         return Err("apps must not be empty".to_string());
     }
 
-    let api_key = std::env::var("GROQ_API_KEY")
-        .or_else(|_| std::env::var("GROQ_KEY"))
-        .unwrap_or_else(|_| {
-            load_env();
-            std::env::var("GROQ_API_KEY")
-                .or_else(|_| std::env::var("GROQ_KEY"))
-                .unwrap_or_default()
-        });
-    if api_key.trim().is_empty() {
-        eprintln!(
-            "[benchmark_apps] GROQ_API_KEY is not set (checked process env + .env next to the app) — skipping AI call"
-        );
-        return Ok(BenchmarkResponse {
-            results: local_heuristic(&specs, &apps),
-            estimator: "fallback".to_string(),
-            error_detail: Some("GROQ_API_KEY isn't set, so the AI estimator was skipped.".to_string()),
-        });
-    }
     eprintln!(
-        "[benchmark_apps] GROQ_API_KEY found ({}), evaluating {} app(s)",
-        mask_key(&api_key),
+        "[benchmark_apps] evaluating {} app(s) via proxy",
         apps.len()
     );
 
@@ -380,7 +351,7 @@ async fn benchmark_apps(
     let mut last_err: Option<String> = None;
 
     for model in models {
-        match call_groq(model, &api_key, &user_text).await {
+        match call_groq(model, &user_text).await {
             Ok(raw) => {
                 let cleaned = strip_to_json(&raw);
                 match serde_json::from_str::<serde_json::Value>(&cleaned) {
