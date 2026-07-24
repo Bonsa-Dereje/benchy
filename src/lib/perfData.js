@@ -90,6 +90,7 @@ export const DEPARTMENTS = [
 export const GENERAL_CATEGORIES = [
   'Everyday Use & Browsing',
   'Study, Reading & Office Work',
+  'Graphic Design',
   'Video Editing & Rendering',
   '3D Modeling & CAD',
   'Running LLMs Locally',
