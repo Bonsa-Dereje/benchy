@@ -542,6 +542,180 @@ async fn benchmark_apps(
     })
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpgradeItem {
+    pub title: String,
+    pub component: String,
+    pub reason: String,
+    pub estimated_boost: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct UpgradeAdviceResponse {
+    pub category: String,
+    pub summary: String,
+    pub upgrades: Vec<UpgradeItem>,
+    pub estimator: String,
+    pub error_detail: Option<String>,
+}
+
+const UPGRADE_SYSTEM_PROMPT: &str = r#"You are a PC hardware optimization expert.
+Given a user's machine specs and a target use-case category to improve (e.g. Graphic Design, Video Editing, Gaming, etc.), analyze the system hardware bottlenecks and recommend 2 to 4 concrete, realistic hardware upgrades.
+
+You MUST reply with ONLY a JSON object (no markdown formatting, no markdown code blocks) matching this exact schema:
+{
+  "summary": "<1-2 sentences explaining why current specs bottleneck performance for this category>",
+  "upgrades": [
+    {
+      "title": "<Actionable title e.g. 'Add 8GB RAM (Upgrade to 16GB)'>",
+      "component": "<RAM | GPU | CPU | Storage>",
+      "reason": "<1 concise sentence on how this upgrade helps>",
+      "estimated_boost": "<Estimated score or speed boost, e.g. '+25% speed'>"
+    }
+  ]
+}
+"#;
+
+fn local_upgrade_heuristic(specs: &SystemSpecs, category: &str) -> UpgradeAdviceResponse {
+    let ram = specs.ram_total_gb;
+    let gpu_lower = specs.gpu_name.to_lowercase();
+    let has_dedicated_gpu = !gpu_lower.contains("intel(r) uhd")
+        && !gpu_lower.contains("intel iris")
+        && !gpu_lower.contains("integrated")
+        && !gpu_lower.contains("unknown");
+
+    let mut upgrades = Vec::new();
+
+    if ram < 16.0 {
+        upgrades.push(UpgradeItem {
+            title: "Add 8GB RAM (Upgrade to 16GB)".to_string(),
+            component: "RAM".to_string(),
+            reason: format!("Your current {:.1}GB RAM limits multitasking and project asset caching.", ram),
+            estimated_boost: "+30% speed & stability".to_string(),
+        });
+    } else if ram < 32.0 && (category.contains("Video") || category.contains("3D") || category.contains("LLM") || category.contains("Graphic")) {
+        upgrades.push(UpgradeItem {
+            title: "Upgrade to 32GB High-Speed RAM".to_string(),
+            component: "RAM".to_string(),
+            reason: "High-resolution media editing and 3D scenes perform significantly smoother with 32GB RAM.".to_string(),
+            estimated_boost: "+20% render responsiveness".to_string(),
+        });
+    }
+
+    if !has_dedicated_gpu {
+        upgrades.push(UpgradeItem {
+            title: "Upgrade to Dedicated GPU (6GB+ VRAM)".to_string(),
+            component: "GPU".to_string(),
+            reason: format!("Integrated graphics ({}) lacks hardware acceleration for heavy workflows.", specs.gpu_name),
+            estimated_boost: "+45% graphics rendering score".to_string(),
+        });
+    } else if category.contains("LLM") || category.contains("3D") || category.contains("Gaming") {
+        upgrades.push(UpgradeItem {
+            title: "Upgrade to High-VRAM GPU (12GB+ VRAM)".to_string(),
+            component: "GPU".to_string(),
+            reason: "Demanding 3D rendering and local AI models require expanded GPU VRAM memory.".to_string(),
+            estimated_boost: "+35% AI & 3D speed".to_string(),
+        });
+    }
+
+    if let Some(disk) = specs.disks.first() {
+        if disk.kind.to_lowercase().contains("hdd") || disk.available_gb < 50.0 {
+            upgrades.push(UpgradeItem {
+                title: "Add 1TB High-Speed NVMe SSD".to_string(),
+                component: "Storage".to_string(),
+                reason: "Faster disk read/write speeds eliminate file loading & project cache lag.".to_string(),
+                estimated_boost: "+40% asset load speed".to_string(),
+            });
+        }
+    }
+
+    if upgrades.is_empty() || specs.cpu_cores < 8 {
+        upgrades.push(UpgradeItem {
+            title: "Upgrade CPU (8+ Cores / 16 Threads)".to_string(),
+            component: "CPU".to_string(),
+            reason: format!("Your {} CPU ({} cores) handles multi-threaded processing.", specs.cpu_brand, specs.cpu_cores),
+            estimated_boost: "+25% multi-threaded speed".to_string(),
+        });
+    }
+
+    UpgradeAdviceResponse {
+        category: category.to_string(),
+        summary: format!("Based on your specs ({:.0}GB RAM, {}), here are the recommended upgrades to improve {} performance.", 
+            ram, specs.gpu_name, category),
+        upgrades,
+        estimator: "fallback".to_string(),
+        error_detail: None,
+    }
+}
+
+#[tauri::command]
+async fn get_upgrade_advice(
+    specs: SystemSpecs,
+    category: String,
+) -> Result<UpgradeAdviceResponse, String> {
+    let spec_summary = build_spec_summary(&specs);
+    let user_text = format!("Machine specs:\n{}\n\nTarget category to improve: {}\nProvide hardware upgrade recommendations.", spec_summary, category);
+
+    let models: Vec<&str> = std::iter::once(GROQ_MODEL)
+        .chain(GROQ_FALLBACKS.iter().copied())
+        .collect();
+
+    for model in models {
+        let client = reqwest::Client::new();
+        let body = serde_json::json!({
+            "model": model,
+            "max_tokens": 800,
+            "response_format": { "type": "json_object" },
+            "messages": [
+                { "role": "system", "content": UPGRADE_SYSTEM_PROMPT },
+                { "role": "user", "content": user_text }
+            ]
+        });
+
+        if let Ok(resp) = client.post(GROQ_ENDPOINT).json(&body).send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(content) = json["choices"][0]["message"]["content"].as_str() {
+                        let cleaned = strip_to_json(content);
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&cleaned) {
+                            let summary = parsed.get("summary").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                            if let Some(upgrades_arr) = parsed.get("upgrades").and_then(|u| u.as_array()) {
+                                let mut upgrades = Vec::new();
+                                for item in upgrades_arr {
+                                    if let (Some(t), Some(c), Some(r), Some(b)) = (
+                                        item.get("title").and_then(|v| v.as_str()),
+                                        item.get("component").and_then(|v| v.as_str()),
+                                        item.get("reason").and_then(|v| v.as_str()),
+                                        item.get("estimated_boost").and_then(|v| v.as_str()),
+                                    ) {
+                                        upgrades.push(UpgradeItem {
+                                            title: t.to_string(),
+                                            component: c.to_string(),
+                                            reason: r.to_string(),
+                                            estimated_boost: b.to_string(),
+                                        });
+                                    }
+                                }
+                                if !upgrades.is_empty() {
+                                    return Ok(UpgradeAdviceResponse {
+                                        category,
+                                        summary,
+                                        upgrades,
+                                        estimator: "ai".to_string(),
+                                        error_detail: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(local_upgrade_heuristic(&specs, &category))
+}
+
 fn load_env() {
     let _ = dotenvy::dotenv();
     let _ = dotenvy::from_filename("src-tauri/.env");
@@ -577,7 +751,8 @@ pub fn run() {
             greet,
             get_system_specs,
             benchmark_apps,
-            get_battery_report
+            get_battery_report,
+            get_upgrade_advice
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

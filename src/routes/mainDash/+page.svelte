@@ -36,6 +36,39 @@
     }
   }
 
+  // ── hardware upgrade advisor ──
+  let upgradeModalOpen = false
+  let selectedUpgradeCat = null
+  let upgradeState = { stage: 'idle', data: null, error: false, errorDetail: '' } // idle|loading|done
+
+  function openUpgradeModal() {
+    upgradeModalOpen = true
+    selectedUpgradeCat = null
+    upgradeState = { stage: 'idle', data: null, error: false, errorDetail: '' }
+  }
+
+  function closeUpgradeModal() {
+    upgradeModalOpen = false
+  }
+
+  async function selectUpgradeCategory(cat) {
+    selectedUpgradeCat = cat
+    upgradeState = { stage: 'loading', data: null, error: false, errorDetail: '' }
+    try {
+      const resp = await invoke('get_upgrade_advice', { specs, category: cat })
+      upgradeState = { stage: 'done', data: resp, error: false, errorDetail: '' }
+    } catch (e) {
+      console.error('get_upgrade_advice failed', e)
+      upgradeState = { stage: 'done', data: null, error: true, errorDetail: String(e) }
+    }
+  }
+
+  function goToRedirect(itemTitle, catName) {
+    const item = itemTitle || 'Hardware Upgrade'
+    const category = catName || 'General'
+    goto(`/redirect?item=${encodeURIComponent(item)}&category=${encodeURIComponent(category)}`)
+  }
+
   // ─────────────────────────────────────────────────────────────
   // Window size is hardcoded to match src-tauri/tauri.conf.json
   // (525×647, resizable: false) instead of being measured/scaled at
@@ -332,8 +365,11 @@
     {/if}
 
     <section class="panel general-panel">
-      <div class="panel-header">
+      <div class="panel-header panel-header-between">
         <span class="panel-title"><span class="spark">{@html UI_ICONS.spark}</span>General readiness</span>
+        <button class="upgrade-trigger-btn" on:click={openUpgradeModal}>
+          <span class="bolt">⚡</span> Upgrade
+        </button>
       </div>
 
       {#if general.error}
@@ -474,6 +510,96 @@
             {/each}
           </div>
           <button class="text-btn" on:click={backToDept}>← try different apps</button>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if upgradeModalOpen}
+    <div class="modal-backdrop" on:click={closeUpgradeModal} transition:fade={{ duration: 150 }}>
+      <div class="modal upgrade-modal" on:click|stopPropagation transition:fly={{ y: 12, duration: 200 }}>
+        <div class="modal-header">
+          <span class="modal-title-with-bolt"><span class="bolt-title">⚡</span> Hardware Upgrade Advisor</span>
+          <button class="close-btn" on:click={closeUpgradeModal} aria-label="Close">✕</button>
+        </div>
+
+        <!-- Slowly pulsing box over bar graph list asking which standard to improve -->
+        <div class="pulse-box">
+          <div class="pulse-inner">
+            <span class="pulse-spark">⚡</span>
+            <div>
+              <div class="pulse-title">Which one do you wanna improve?</div>
+              <div class="pulse-sub">Select any readiness standard below to ask AI for hardware upgrade solutions</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- List down of bar graph results -->
+        <div class="bar-list modal-bar-list">
+          {#each GENERAL_CATEGORIES as cat, i}
+            {@const val = general.results[cat] ?? 0}
+            <button
+              class="bar-row bar-row-interactive {selectedUpgradeCat === cat ? 'selected' : ''}"
+              on:click={() => selectUpgradeCategory(cat)}
+              in:fly={{ y: 6, duration: 220, delay: i * 30 }}
+            >
+              <div class="bar-top">
+                <span class="bar-name">{cat}</span>
+                <div class="bar-top-right">
+                  <span class="bar-pct" style="color:{gaugeColor(val)}">{val}%</span>
+                  <span class="select-arrow">{selectedUpgradeCat === cat ? '▼' : '→'}</span>
+                </div>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill" style="width:{val}%; background:{gaugeColor(val)}"></div>
+              </div>
+            </button>
+          {/each}
+        </div>
+
+        <!-- AI Upgrade Recommendations -->
+        {#if selectedUpgradeCat}
+          <div class="upgrade-results-section" in:fade={{ duration: 180 }}>
+            {#if upgradeState.stage === 'loading'}
+              <div class="upgrade-loading">
+                <div class="ai-pulse-sm">
+                  <span class="spark-big">{@html UI_ICONS.spark}</span>
+                </div>
+                <div class="loading-txt">Analyzing bottlenecks for <strong>{selectedUpgradeCat}</strong>...</div>
+              </div>
+            {:else if upgradeState.stage === 'done' && upgradeState.data}
+              <div class="upgrade-summary-box">
+                <span class="summary-icon">💡</span>
+                <span>{upgradeState.data.summary}</span>
+              </div>
+
+              <div class="upgrade-options-title">Recommended Upgrades (Click to explore):</div>
+              <div class="upgrade-cards-list">
+                {#each upgradeState.data.upgrades as upg}
+                  <button class="upgrade-card-btn" on:click={() => goToRedirect(upg.title, selectedUpgradeCat)}>
+                    <div class="card-header-row">
+                      <span class="comp-badge {upg.component.toLowerCase()}">{upg.component}</span>
+                      <span class="boost-badge">{upg.estimated_boost}</span>
+                    </div>
+                    <div class="card-item-title">{upg.title}</div>
+                    <div class="card-item-reason">{upg.reason}</div>
+                    <div class="card-action-bar">
+                      <span>Upgrade now</span>
+                      <span class="action-arrow">→</span>
+                    </div>
+                  </button>
+                {/each}
+              </div>
+            {:else if upgradeState.error}
+              <div class="unavailable">
+                <span class="icon-lg">{@html UI_ICONS.alert}</span>
+                <div>
+                  <div class="unavailable-title">Could not generate upgrade recommendations</div>
+                  <div class="unavailable-sub">{upgradeState.errorDetail}</div>
+                </div>
+              </div>
+            {/if}
+          </div>
         {/if}
       </div>
     </div>
@@ -1235,5 +1361,297 @@
     width: 14px;
     height: 14px;
     border-radius: 3px;
+  }
+
+  /* ── Upgrade Button & Modal Styles ── */
+  .panel-header-between {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+  }
+
+  .upgrade-trigger-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: linear-gradient(135deg, #ff6b00 0%, #ff8c00 100%);
+    color: #ffffff;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(255, 107, 0, 0.25);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .upgrade-trigger-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(255, 107, 0, 0.35);
+  }
+
+  .upgrade-trigger-btn:active {
+    transform: scale(0.96);
+  }
+
+  .bolt {
+    font-size: 11px;
+  }
+
+  .modal-title-with-bolt {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text);
+  }
+
+  .bolt-title {
+    color: var(--accent);
+  }
+
+  /* Pulse Box Container */
+  .pulse-box {
+    position: relative;
+    background: linear-gradient(135deg, rgba(255, 107, 0, 0.05) 0%, rgba(255, 144, 64, 0.1) 100%);
+    border: 1.5px solid rgba(255, 107, 0, 0.4);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+    animation: slow-pulse 2.8s infinite ease-in-out;
+  }
+
+  @keyframes slow-pulse {
+    0%, 100% {
+      border-color: rgba(255, 107, 0, 0.3);
+      box-shadow: 0 0 0 0 rgba(255, 107, 0, 0);
+    }
+    50% {
+      border-color: rgba(255, 107, 0, 0.85);
+      box-shadow: 0 0 16px 2px rgba(255, 107, 0, 0.25);
+    }
+  }
+
+  .pulse-inner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .pulse-spark {
+    font-size: 20px;
+    color: var(--accent);
+  }
+
+  .pulse-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .pulse-sub {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 2px;
+  }
+
+  .modal-bar-list {
+    margin-bottom: 16px;
+  }
+
+  .bar-row-interactive {
+    width: 100%;
+    text-align: left;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    margin-bottom: 6px;
+  }
+
+  .bar-row-interactive:hover {
+    border-color: var(--accent);
+    background: #fff9f4;
+  }
+
+  .bar-row-interactive.selected {
+    border-color: var(--accent);
+    background: rgba(255, 107, 0, 0.08);
+    box-shadow: 0 2px 8px rgba(255, 107, 0, 0.15);
+  }
+
+  .bar-top-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .select-arrow {
+    font-size: 11px;
+    color: var(--text3);
+    transition: color 0.15s ease;
+  }
+
+  .bar-row-interactive:hover .select-arrow,
+  .bar-row-interactive.selected .select-arrow {
+    color: var(--accent);
+  }
+
+  .upgrade-results-section {
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+    margin-top: 10px;
+  }
+
+  .upgrade-loading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    background: #fafafa;
+    border-radius: 8px;
+    border: 1px dashed var(--border2);
+  }
+
+  .ai-pulse-sm {
+    width: 24px;
+    height: 24px;
+    color: var(--accent);
+    animation: spin 1.5s infinite linear;
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  .loading-txt {
+    font-size: 12px;
+    color: var(--text2);
+  }
+
+  .upgrade-summary-box {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    background: rgba(255, 107, 0, 0.06);
+    border-left: 3px solid var(--accent);
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text);
+    margin-bottom: 14px;
+  }
+
+  .summary-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .upgrade-options-title {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text2);
+    margin-bottom: 10px;
+  }
+
+  .upgrade-cards-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .upgrade-card-btn {
+    width: 100%;
+    text-align: left;
+    background: #ffffff;
+    border: 1.5px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
+  }
+
+  .upgrade-card-btn:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(255, 107, 0, 0.16);
+    background: #fffcfa;
+  }
+
+  .card-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .comp-badge {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg3);
+    color: var(--text);
+    text-transform: uppercase;
+  }
+
+  .comp-badge.ram { background: #e0f2fe; color: #0369a1; }
+  .comp-badge.gpu { background: #fef3c7; color: #b45309; }
+  .comp-badge.cpu { background: #fce7f3; color: #be185d; }
+  .comp-badge.storage { background: #dcfce7; color: #15803d; }
+
+  .boost-badge {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--green);
+    background: rgba(22, 163, 74, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .card-item-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .card-item-reason {
+    font-size: 11px;
+    color: var(--text2);
+    line-height: 1.4;
+  }
+
+  .card-action-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px stroke var(--border);
+  }
+
+  .action-arrow {
+    transition: transform 0.15s ease;
+  }
+
+  .upgrade-card-btn:hover .action-arrow {
+    transform: translateX(4px);
   }
 </style>
