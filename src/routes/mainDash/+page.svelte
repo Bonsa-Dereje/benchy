@@ -1,11 +1,10 @@
 <!-- src/routes/mainDash/+page.svelte -->
 <script>
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount } from 'svelte'
   import { get } from 'svelte/store'
   import { fade, fly } from 'svelte/transition'
   import { goto } from '$app/navigation'
   import { invoke } from '@tauri-apps/api/core'
-  import { getCurrentWindow, LogicalSize, currentMonitor } from '@tauri-apps/api/window'
   import { DEPARTMENTS, DEPT_ICONS, APP_ICONS, SPEC_ICONS, UI_ICONS, GENERAL_CATEGORIES } from '$lib/perfData.js'
   import { specsStore, specsErrorStore, generalStore } from '$lib/loadStore.js'
   import logo from '../../assets/logo.png'
@@ -23,81 +22,76 @@
   let bench = { stage: 'idle', results: {}, notes: {}, error: false, errorDetail: '' } // idle|loading|done
 
   // ─────────────────────────────────────────────────────────────
-  // Window auto-fit: no scrollbars, ever. The window always resizes to
-  // match its content — but it's also clamped to the screen's usable
-  // area. If the content's natural size would be bigger than the screen
-  // can fit, everything (boxes, gaps, text — the whole layout) is scaled
-  // down together with a single CSS transform so it fits inside the
-  // window edge to edge, instead of clipping or scrolling anything.
+  // Window size is hardcoded to match src-tauri/tauri.conf.json
+  // (525×647, resizable: false) instead of being measured/scaled at
+  // runtime — the previous "measure content, then shrink+resize the
+  // window to fit" approach depended on the Tauri monitor/resize APIs
+  // behaving the same across machines, which they didn't. Now the
+  // layout itself is sized to fit inside that fixed window on every
+  // machine, and the CSS just leaves it a little internal scroll room
+  // in case a particular OS/font stack renders a touch taller.
   // ─────────────────────────────────────────────────────────────
-  let rootEl
-  let mainObserver
-  let fitFrame = null
-  let contentScale = 1 // 1 = natural size; <1 = shrunk to fit the screen
 
-  // Known Tauri quirk: on macOS, setSize() can land on the *outer*
-  // window size instead of the inner content size, so the titlebar
-  // eats into the content. A small fudge factor keeps content from
-  // getting clipped there. https://github.com/tauri-apps/tauri/issues/15136
-  const MAC_TITLEBAR_FUDGE = typeof navigator !== 'undefined' && /Mac/.test(navigator.userAgent) ? 28 : 0
+  // ─────────────────────────────────────────────────────────────
+  // Custom scrollbar + edge fade for the fixed 525×647 window.
+  // `main` is a fixed-size viewport; `.scroll-area` inside it does the
+  // actual scrolling with the native scrollbar hidden. A single pill
+  // thumb is drawn on top (purely a position indicator, not draggable)
+  // and only fades in while the user is actively scrolling or moving
+  // the mouse over the window, then fades back out. Two soft gradients
+  // at the top/bottom hint that content continues past the edge, and
+  // hide themselves once you've scrolled all the way to that end.
+  // ─────────────────────────────────────────────────────────────
+  let scrollAreaEl
+  let contentEl
+  let contentObserver
+  let scrollbarTimer
 
-  // Reserve a little room around the edges so the window doesn't sit
-  // flush against the screen border or a taskbar/dock we don't know
-  // the exact height of.
-  const SCREEN_MARGIN_X = 24
-  const SCREEN_MARGIN_Y = 60
+  let atTop = true
+  let atBottom = true
+  let thumbVisible = false
+  let thumbTop = 0
+  let thumbHeight = 0
+  let scrollbarActive = false
 
-  // Natural (unscaled) content size. offsetWidth/offsetHeight — unlike
-  // getBoundingClientRect() — reflect the pre-transform layout box, so
-  // these stay accurate no matter what contentScale is currently applied.
-  function measureNatural() {
-    const w = rootEl ? rootEl.offsetWidth : 720
-    const h = rootEl ? rootEl.offsetHeight : 0
-    return { w, h: h + MAC_TITLEBAR_FUDGE }
-  }
+  const THUMB_MIN = 28
+  const TRACK_INSET = 6
 
-  // Figures out how much logical space is actually available on the
-  // screen the window currently sits on, so we know where "the edge
-  // of the window" really is before asking for a bigger size.
-  async function availableScreenSize() {
-    try {
-      const mon = await currentMonitor()
-      if (!mon) return null
-      const dpi = mon.scaleFactor || 1
-      // Prefer the monitor's usable work area (excludes taskbar/dock) when
-      // the platform exposes it; otherwise fall back to the full monitor size.
-      const area = mon.workArea?.size || mon.size
-      return {
-        w: Math.floor(area.width / dpi - SCREEN_MARGIN_X),
-        h: Math.floor(area.height / dpi - SCREEN_MARGIN_Y),
-      }
-    } catch (e) {
-      return null // not running inside Tauri, or monitor info unavailable
+  function updateScrollMetrics() {
+    if (!scrollAreaEl) return
+    const { scrollTop, scrollHeight, clientHeight } = scrollAreaEl
+    const scrollable = scrollHeight > clientHeight + 1
+    thumbVisible = scrollable
+    atTop = !scrollable || scrollTop <= 1
+    atBottom = !scrollable || scrollTop + clientHeight >= scrollHeight - 1
+
+    if (scrollable) {
+      const trackH = clientHeight - TRACK_INSET * 2
+      thumbHeight = Math.max(THUMB_MIN, (clientHeight / scrollHeight) * trackH)
+      const maxScroll = scrollHeight - clientHeight
+      const travel = trackH - thumbHeight
+      thumbTop = TRACK_INSET + (maxScroll > 0 ? (scrollTop / maxScroll) * travel : 0)
     }
   }
 
-  function fitWindow() {
-    if (fitFrame) cancelAnimationFrame(fitFrame)
-    fitFrame = requestAnimationFrame(async () => {
-      const { w: naturalW, h: naturalH } = measureNatural()
-      const screen = await availableScreenSize()
+  function pulseScrollbar() {
+    scrollbarActive = true
+    clearTimeout(scrollbarTimer)
+    scrollbarTimer = setTimeout(() => { scrollbarActive = false }, 900)
+  }
 
-      // Shrink (never enlarge) just enough that the natural layout fits
-      // inside whatever screen space is available.
-      const fitW = screen ? Math.min(1, screen.w / naturalW) : 1
-      const fitH = screen ? Math.min(1, screen.h / naturalH) : 1
-      contentScale = Math.max(Math.min(fitW, fitH), 0.35) // sane floor so it never vanishes
+  function onScroll() {
+    updateScrollMetrics()
+    pulseScrollbar()
+  }
 
-      const targetW = Math.round(naturalW * contentScale)
-      const targetH = Math.round(naturalH * contentScale)
+  function onMouseMove() {
+    if (thumbVisible) pulseScrollbar()
+  }
 
-      try {
-        await getCurrentWindow().setSize(new LogicalSize(targetW, targetH))
-      } catch (e) {
-        // Not running inside Tauri (e.g. `npm run dev` in a browser tab) — ignore.
-      }
-    })
-
+  function scrollDown() {
+    if (!scrollAreaEl) return
+    scrollAreaEl.scrollBy({ top: Math.round(scrollAreaEl.clientHeight * 0.8), behavior: 'smooth' })
   }
 
   onMount(() => {
@@ -113,15 +107,17 @@
     specsError = get(specsErrorStore)
     general = get(generalStore)
 
-    mainObserver = new ResizeObserver(fitWindow)
-    mainObserver.observe(rootEl)
-    document.fonts?.ready?.then(fitWindow)
-    fitWindow()
-  })
+    // Recompute whenever the actual content height changes (specs
+    // arriving, readiness bars appearing, the app picker opening) —
+    // not on window resize, since the window never resizes now.
+    contentObserver = new ResizeObserver(updateScrollMetrics)
+    contentObserver.observe(contentEl)
+    updateScrollMetrics()
 
-  onDestroy(() => {
-    mainObserver?.disconnect()
-    if (fitFrame) cancelAnimationFrame(fitFrame)
+    return () => {
+      contentObserver?.disconnect()
+      clearTimeout(scrollbarTimer)
+    }
   })
 
   function openPicker() {
@@ -130,7 +126,6 @@
   }
   function closePicker() {
     picker.open = false
-    fitWindow()
   }
   function selectDept(d) {
     picker.step = 'apps'
@@ -199,16 +194,18 @@
   />
 </svelte:head>
 
-<main bind:this={rootEl} style="transform: scale({contentScale}); transform-origin: top left;">
-  <div class="brandbar">
-    <img class="brand-logo" src={logo} alt="MakeDo logo" />
-    <span class="brand-caption">built by <strong>makedo</strong></span>
-  </div>
+<main on:mousemove={onMouseMove}>
+  <div class="scroll-area" bind:this={scrollAreaEl} on:scroll={onScroll}>
+    <div class="scroll-content" bind:this={contentEl}>
+      <div class="brandbar">
+        <img class="brand-logo" src={logo} alt="MakeDo logo" />
+        <span class="brand-caption">built by <strong>makedo</strong></span>
+      </div>
 
-  <header>
-    <h1>Benchy</h1>
-    <p class="sub">Reads your real hardware, then estimates what it can actually handle.</p>
-  </header>
+      <header>
+        <h1>Benchy</h1>
+        <p class="sub">Reads your real hardware, then estimates what it can actually handle.</p>
+      </header>
 
   {#if specsError}
     <div class="panel error-panel">
@@ -287,7 +284,28 @@
       <button class="primary-btn" on:click={openPicker}>Get app-specific benchmark →</button>
     </section>
   {/if}
+    </div>
+  </div>
 
+  <div class="edge-fade edge-fade-top" class:hidden={atTop}></div>
+  <div class="edge-fade edge-fade-bottom" class:hidden={atBottom}></div>
+  <div
+    class="scroll-thumb"
+    class:visible={thumbVisible && scrollbarActive}
+    style="top:{thumbTop}px; height:{thumbHeight}px;"
+  ></div>
+
+  <button
+    class="scroll-down-btn"
+    class:hidden={!thumbVisible || atBottom}
+    on:click={scrollDown}
+    aria-label="Scroll down"
+    tabindex={!thumbVisible || atBottom ? -1 : 0}
+  >
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M6 10L12 16L18 10" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  </button>
 
   {#if picker.open}
     <div class="modal-backdrop" on:click={closePicker} transition:fade={{ duration: 150 }}>
@@ -403,7 +421,8 @@
   :global(html, body) {
     margin: 0;
     padding: 0;
-    overflow: hidden; /* the window resizes to content instead of scrolling */
+    height: 100%;
+    overflow: hidden; /* window is fixed-size (see tauri.conf.json); main scrolls internally if needed */
     background: var(--bg);
   }
   :global(body) {
@@ -414,9 +433,117 @@
   }
 
   main {
-    width: 720px;
+    /* Hardcoded to the window size in src-tauri/tauri.conf.json
+       (app.windows[0].width/height: 525x647, resizable: false) —
+       this is the one and only size the window will ever be, on
+       every machine, so the layout is built to fit it directly
+       instead of being measured and scaled at runtime. */
+    position: relative;
+    width: 525px;
+    height: 647px;
     box-sizing: border-box;
-    padding: 26px 24px 28px;
+    overflow: hidden; /* keeps the fades/thumb from bleeding past the window edge */
+  }
+
+  /* the actual scrolling viewport, filling main edge-to-edge; the
+     16px padding here is what leaves the small gap between the
+     window edge and the cards */
+  .scroll-area {
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 16px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* hide the native scrollbar — replaced by .scroll-thumb below */
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* old Edge/IE */
+  }
+  .scroll-area::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  /* soft gradient hinting that content continues past the edge;
+     hidden once you've scrolled all the way to that end */
+  .edge-fade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 68px;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+    opacity: 1;
+    z-index: 5;
+  }
+  .edge-fade-top {
+    top: 0;
+    background: linear-gradient(to bottom, var(--bg) 0%, rgba(255, 255, 255, 0) 100%);
+  }
+  .edge-fade-bottom {
+    bottom: 0;
+    background: linear-gradient(to top, var(--bg) 0%, rgba(255, 255, 255, 0) 100%);
+  }
+  .edge-fade.hidden {
+    opacity: 0;
+  }
+
+  /* custom scrollbar: one small pill, purely a position indicator (not
+     draggable) — invisible at rest, fades in while scrolling or moving
+     the mouse over the window, then fades back out shortly after */
+  .scroll-thumb {
+    position: absolute;
+    right: 4px;
+    width: 4px;
+    border-radius: 3px;
+    background: var(--border2);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+    z-index: 10;
+  }
+  .scroll-thumb.visible {
+    opacity: 0.55;
+  }
+
+  /* orange circular "scroll down" affordance — sits bottom-right inside
+     the fade, disappears once the user reaches the end of the content */
+  .scroll-down-btn {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 3px 10px rgba(255, 107, 0, 0.35);
+    opacity: 1;
+    transform: translateX(-50%) scale(1) translateY(0);
+    transition: opacity 0.25s ease, transform 0.2s ease, background 0.15s ease, box-shadow 0.15s ease;
+    z-index: 15;
+  }
+  .scroll-down-btn svg {
+    width: 15px;
+    height: 15px;
+  }
+  .scroll-down-btn:hover {
+    background: var(--accent2);
+    box-shadow: 0 4px 14px rgba(255, 107, 0, 0.45);
+    transform: translateX(-50%) scale(1.06) translateY(0);
+  }
+  .scroll-down-btn:active {
+    transform: translateX(-50%) scale(0.96) translateY(0);
+  }
+  .scroll-down-btn.hidden {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(-50%) scale(0.85) translateY(4px);
   }
 
   /* ── brand bar ── */
@@ -482,12 +609,10 @@
     text-align: center;
     padding: 40px 20px 34px;
     min-height: 460px;
-    /* Hardcoded to the actual Tauri window width (525px in tauri.conf.json)
-       minus main's own left+right padding (24px + 24px), so this card never
-       renders wider than the real window — regardless of main's 720px
-       layout width or the runtime content-scale transform. */
-    width: 150px;
-    max-width: 100%;
+    /* Fill main's available content width (525px window − 16px padding on
+       each side, see the `main` rule above) rather than a separate
+       hardcoded number that has to be kept in sync by hand. */
+    width: 100%;
     box-sizing: border-box;
     margin-left: auto;
     margin-right: auto;
