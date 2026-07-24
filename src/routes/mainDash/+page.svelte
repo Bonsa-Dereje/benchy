@@ -21,6 +21,21 @@
   let picker = { open: false, step: 'dept', dept: null, apps: [] } // step: dept|apps
   let bench = { stage: 'idle', results: {}, notes: {}, error: false, errorDetail: '' } // idle|loading|done
 
+  // ── battery health (runs `powercfg /batteryreport`, Windows-only) ──
+  let battery = { stage: 'idle', data: null, error: false, errorDetail: '' } // idle|loading|done
+  const BATTERY_ICON = '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="7" width="18" height="10" rx="2" stroke="currentColor" stroke-width="1.8"/><rect x="21" y="10" width="2" height="4" rx="0.6" fill="currentColor"/><rect x="4.5" y="9.5" width="9" height="5" rx="0.8" fill="currentColor"/></svg>'
+
+  async function runBatteryReport() {
+    battery = { stage: 'loading', data: null, error: false, errorDetail: '' }
+    try {
+      const resp = await invoke('get_battery_report')
+      battery = { stage: 'done', data: resp, error: false, errorDetail: '' }
+    } catch (e) {
+      console.error('battery report failed', e)
+      battery = { stage: 'done', data: null, error: true, errorDetail: String(e) }
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────
   // Window size is hardcoded to match src-tauri/tauri.conf.json
   // (525×647, resizable: false) instead of being measured/scaled at
@@ -241,6 +256,80 @@
         </div>
       </div>
     </section>
+
+    {#if specs.os && specs.os.toLowerCase().includes('windows')}
+      <section class="panel battery-panel" in:fade={{ duration: 220 }}>
+        <div class="panel-header">
+          <span class="panel-title"><span class="spark">{@html BATTERY_ICON}</span>Battery health</span>
+          {#if battery.stage === 'done' && !battery.error}
+            <button class="text-btn battery-refresh" on:click={runBatteryReport}>Refresh</button>
+          {/if}
+        </div>
+
+        {#if battery.stage === 'idle'}
+          <div class="battery-idle">
+            <div class="cta-sub">
+              Runs Windows' built-in battery report and compares full-charge capacity against
+              design capacity to see how much the battery has worn down.
+            </div>
+            <button class="run-btn" on:click={runBatteryReport}>Check battery health →</button>
+          </div>
+        {:else if battery.stage === 'loading'}
+          <div class="loading-panel" in:fade={{ duration: 150 }}>
+            <div class="ai-pulse"><span class="spark-big">{@html BATTERY_ICON}</span></div>
+            <div class="loading-title">Generating battery report…</div>
+            <div class="loading-sub">Running powercfg /batteryreport</div>
+          </div>
+        {:else if battery.error}
+          <div class="unavailable" in:fade={{ duration: 200 }}>
+            <span class="icon-lg">{@html UI_ICONS.alert}</span>
+            <div>
+              <div class="unavailable-title">Couldn't read battery report</div>
+              <div class="unavailable-sub">
+                {battery.errorDetail || 'powercfg failed, or no report was generated.'}
+              </div>
+            </div>
+          </div>
+          <button class="text-btn" on:click={runBatteryReport}>← try again</button>
+        {:else if battery.data && !battery.data.has_battery}
+          <div class="battery-none">No battery detected — this looks like a desktop.</div>
+        {:else if battery.data}
+          {@const d = battery.data}
+          {@const health = d.health_pct ?? 0}
+          {@const designWh = d.design_capacity_mwh != null ? d.design_capacity_mwh / 1000 : null}
+          {@const fullWh = d.full_charge_capacity_mwh != null ? d.full_charge_capacity_mwh / 1000 : null}
+          <div class="battery-caps" in:fade={{ duration: 200 }}>
+            <div class="battery-cap">
+              <div class="battery-cap-label">Design capacity</div>
+              <div class="battery-cap-value">{designWh?.toFixed(1)} Wh</div>
+            </div>
+            <div class="battery-cap">
+              <div class="battery-cap-label">Full charge capacity</div>
+              <div class="battery-cap-value">{fullWh?.toFixed(1)} Wh</div>
+            </div>
+            {#if d.cycle_count != null}
+              <div class="battery-cap">
+                <div class="battery-cap-label">Cycle count</div>
+                <div class="battery-cap-value">{d.cycle_count}</div>
+              </div>
+            {/if}
+          </div>
+          <div class="bar-row">
+            <div class="bar-top">
+              <span class="bar-name">Battery health</span>
+              <span class="bar-pct" style="color:{gaugeColor(health)}">{health.toFixed(0)}%</span>
+            </div>
+            <div class="bar-track">
+              <div class="bar-fill" style="width:{health}%; background:{gaugeColor(health)}"></div>
+            </div>
+            <div class="bar-note">
+              Degraded {d.degradation_pct?.toFixed(1)}% from design capacity
+              ({designWh?.toFixed(1)} Wh → {fullWh?.toFixed(1)} Wh).
+            </div>
+          </div>
+        {/if}
+      </section>
+    {/if}
 
     <section class="panel general-panel">
       <div class="panel-header">
@@ -752,6 +841,50 @@
   }
   .spec-card:hover {
     border-color: var(--border2);
+  }
+  .battery-panel .panel-header {
+    justify-content: space-between;
+  }
+  .battery-refresh {
+    margin-top: 0;
+  }
+  .battery-idle {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .battery-none {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text3);
+  }
+  .battery-caps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .battery-cap {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: var(--r2);
+    padding: 10px 12px;
+  }
+  .battery-cap-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 4px;
+  }
+  .battery-cap-value {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
   }
   .spec-label {
     display: flex;

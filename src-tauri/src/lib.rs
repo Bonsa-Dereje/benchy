@@ -138,6 +138,142 @@ fn get_system_specs() -> Result<SystemSpecs, String> {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Battery health — shells out to Windows' built-in
+// `powercfg /batteryreport`, which dumps an HTML report to disk, then
+// scrapes DESIGN CAPACITY / FULL CHARGE CAPACITY (and CYCLE COUNT, when
+// present) out of it to compute how much the battery has degraded.
+// Windows-only; other platforms get a clear error instead of a fake result.
+// ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BatteryReport {
+    pub has_battery: bool,
+    pub design_capacity_mwh: Option<u32>,
+    pub full_charge_capacity_mwh: Option<u32>,
+    // full_charge / design * 100 — "how much of the original tank is left"
+    pub health_pct: Option<f64>,
+    // 100 - health_pct — "how much has been lost"
+    pub degradation_pct: Option<f64>,
+    pub cycle_count: Option<u32>,
+}
+
+// Pulls the text content of the <td> immediately following the first <td>
+// that contains `label`. The report's rows all look like:
+//   <tr><td class="label">DESIGN CAPACITY</td><td align="right">57,420 mWh</td></tr>
+// so "find the label, then the next <td>...</td> after it" is enough —
+// no need for a full HTML parser for a report this simple/stable.
+#[cfg(target_os = "windows")]
+fn extract_field(html: &str, label: &str) -> Option<String> {
+    let label_idx = html.find(label)?;
+    let rest = &html[label_idx + label.len()..];
+    let td_open_rel = rest.find("<td")?;
+    let after_open = &rest[td_open_rel..];
+    let gt_rel = after_open.find('>')?;
+    let content_start = gt_rel + 1;
+    let close_rel = after_open.find("</td>")?;
+    if close_rel < content_start {
+        return None;
+    }
+    Some(after_open[content_start..close_rel].trim().to_string())
+}
+
+// "57,420 mWh" -> 57420. Strips commas, "mWh", any stray non-digit chars.
+#[cfg(target_os = "windows")]
+fn parse_mwh(raw: &str) -> Option<u32> {
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse::<u32>().ok()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn parse_battery_report(html: &str) -> BatteryReport {
+    let design = extract_field(html, "DESIGN CAPACITY").and_then(|s| parse_mwh(&s));
+    let full = extract_field(html, "FULL CHARGE CAPACITY").and_then(|s| parse_mwh(&s));
+    let cycle_count = extract_field(html, "CYCLE COUNT").and_then(|s| parse_mwh(&s));
+
+    let (health_pct, degradation_pct) = match (design, full) {
+        (Some(d), Some(f)) if d > 0 => {
+            let health = (f as f64 / d as f64) * 100.0;
+            let health = (health * 10.0).round() / 10.0;
+            let degraded = ((100.0 - health) * 10.0).round() / 10.0;
+            (Some(health.max(0.0)), Some(degraded.max(0.0)))
+        }
+        _ => (None, None),
+    };
+
+    BatteryReport {
+        has_battery: design.is_some() && full.is_some(),
+        design_capacity_mwh: design,
+        full_charge_capacity_mwh: full,
+        health_pct,
+        degradation_pct,
+        cycle_count,
+    }
+}
+
+#[tauri::command]
+fn get_battery_report() -> Result<BatteryReport, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let report_path = std::env::temp_dir().join("battery-report.html");
+
+        eprintln!(
+            "[get_battery_report] running: powercfg /batteryreport /output {}",
+            report_path.display()
+        );
+
+        let output = Command::new("powercfg")
+            .args(["/batteryreport", "/output"])
+            .arg(&report_path)
+            .output()
+            .map_err(|e| format!("failed to launch powercfg: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let msg = format!(
+                "powercfg exited with an error: {}{}",
+                stderr.trim(),
+                if stderr.trim().is_empty() {
+                    stdout.trim().to_string()
+                } else {
+                    String::new()
+                }
+            );
+            eprintln!("[get_battery_report] ✗ {}", msg);
+            return Err(msg);
+        }
+
+        let html = std::fs::read_to_string(&report_path).map_err(|e| {
+            format!(
+                "powercfg ran but the report at {} couldn't be read: {}",
+                report_path.display(),
+                e
+            )
+        })?;
+
+        let report = parse_battery_report(&html);
+        if !report.has_battery {
+            eprintln!("[get_battery_report] no DESIGN CAPACITY / FULL CHARGE CAPACITY found — likely a desktop with no battery");
+        } else {
+            eprintln!(
+                "[get_battery_report] ✓ design={:?} mWh, full={:?} mWh, health={:?}%",
+                report.design_capacity_mwh, report.full_charge_capacity_mwh, report.health_pct
+            );
+        }
+        Ok(report)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Battery report is only available on Windows (uses powercfg).".to_string())
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Benchmark estimator — same idea as api/products.js's
 // test-performance handler, ported to Rust and pointed at this
 // machine's real specs instead of a marketplace listing.
@@ -440,7 +576,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             get_system_specs,
-            benchmark_apps
+            benchmark_apps,
+            get_battery_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
