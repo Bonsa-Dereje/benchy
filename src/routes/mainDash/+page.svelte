@@ -38,22 +38,36 @@
 
   // ── hardware upgrade advisor ──
   let upgradeModalOpen = false
+  let upgradeResultsModalOpen = false
   let selectedUpgradeCat = null
+  let selectedUpgrades = []
   let upgradeState = { stage: 'idle', data: null, error: false, errorDetail: '' } // idle|loading|done
 
   function openUpgradeModal() {
     upgradeModalOpen = true
+    upgradeResultsModalOpen = false
     selectedUpgradeCat = null
+    selectedUpgrades = []
     upgradeState = { stage: 'idle', data: null, error: false, errorDetail: '' }
   }
 
-  function closeUpgradeModal() {
+  function closeAllUpgradeModals() {
     upgradeModalOpen = false
+    upgradeResultsModalOpen = false
+  }
+
+  function backToCategorySelect() {
+    upgradeResultsModalOpen = false
+    upgradeModalOpen = true
   }
 
   async function selectUpgradeCategory(cat) {
     selectedUpgradeCat = cat
+    selectedUpgrades = []
+    upgradeModalOpen = false
+    upgradeResultsModalOpen = true
     upgradeState = { stage: 'loading', data: null, error: false, errorDetail: '' }
+
     try {
       const resp = await invoke('get_upgrade_advice', { specs, category: cat })
       upgradeState = { stage: 'done', data: resp, error: false, errorDetail: '' }
@@ -63,10 +77,19 @@
     }
   }
 
-  function goToRedirect(itemTitle, catName) {
-    const item = itemTitle || 'Hardware Upgrade'
-    const category = catName || 'General'
-    goto(`/redirect?item=${encodeURIComponent(item)}&category=${encodeURIComponent(category)}`)
+  function toggleUpgradeSelection(title) {
+    if (selectedUpgrades.includes(title)) {
+      selectedUpgrades = selectedUpgrades.filter(t => t !== title)
+    } else {
+      selectedUpgrades = [...selectedUpgrades, title]
+    }
+  }
+
+  function proceedWithSelectedUpgrades() {
+    if (!selectedUpgrades.length) return
+    const itemsParam = selectedUpgrades.join('|')
+    const cat = selectedUpgradeCat || 'PC performance'
+    goto(`/redirect?item=${encodeURIComponent(itemsParam)}&category=${encodeURIComponent(cat)}`)
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -360,16 +383,18 @@
               ({designWh?.toFixed(1)} Wh → {fullWh?.toFixed(1)} Wh).
             </div>
           </div>
+          <div class="battery-upgrade-action">
+            <button class="upgrade-battery-btn" on:click={() => selectUpgradeCategory('Battery Health')}>
+              Upgrade battery →
+            </button>
+          </div>
         {/if}
       </section>
     {/if}
 
     <section class="panel general-panel">
-      <div class="panel-header panel-header-between">
-        <span class="panel-title"><span class="spark">{@html UI_ICONS.spark}</span>General readiness</span>
-        <button class="upgrade-trigger-btn" on:click={openUpgradeModal}>
-          <span class="bolt">⚡</span> Upgrade
-        </button>
+      <div class="panel-header">
+        <span class="panel-title"><span class="spark">{@html UI_ICONS.spark}</span>PC performance</span>
       </div>
 
       {#if general.error}
@@ -397,6 +422,11 @@
               <div class="bar-note">{general.notes[cat] || bandDescription(val)}</div>
             </div>
           {/each}
+        </div>
+        <div class="panel-bottom-action">
+          <button class="upgrade-pc-btn" on:click={openUpgradeModal}>
+            Upgrade your PC →
+          </button>
         </div>
       {/if}
     </section>
@@ -515,31 +545,29 @@
     </div>
   {/if}
 
+  <!-- Modal 1: Select Category to Improve -->
   {#if upgradeModalOpen}
-    <div class="modal-backdrop" on:click={closeUpgradeModal} transition:fade={{ duration: 150 }}>
+    <div class="modal-backdrop" on:click={closeAllUpgradeModals} transition:fade={{ duration: 150 }}>
       <div class="modal upgrade-modal" on:click|stopPropagation transition:fly={{ y: 12, duration: 200 }}>
         <div class="modal-header">
-          <span class="modal-title-with-bolt"><span class="bolt-title">⚡</span> Hardware Upgrade Advisor</span>
-          <button class="close-btn" on:click={closeUpgradeModal} aria-label="Close">✕</button>
+          <span>Hardware Upgrade Advisor</span>
+          <button class="close-btn" on:click={closeAllUpgradeModals} aria-label="Close">✕</button>
         </div>
 
-        <!-- Slowly pulsing box over bar graph list asking which standard to improve -->
         <div class="pulse-box">
           <div class="pulse-inner">
-            <span class="pulse-spark">⚡</span>
             <div>
               <div class="pulse-title">Which one do you wanna improve?</div>
-              <div class="pulse-sub">Select any readiness standard below to ask AI for hardware upgrade solutions</div>
+              <div class="pulse-sub">Select any performance standard below to analyze hardware upgrade options</div>
             </div>
           </div>
         </div>
 
-        <!-- List down of bar graph results -->
         <div class="bar-list modal-bar-list">
           {#each GENERAL_CATEGORIES as cat, i}
             {@const val = general.results[cat] ?? 0}
             <button
-              class="bar-row bar-row-interactive {selectedUpgradeCat === cat ? 'selected' : ''}"
+              class="bar-row bar-row-interactive"
               on:click={() => selectUpgradeCategory(cat)}
               in:fly={{ y: 6, duration: 220, delay: i * 30 }}
             >
@@ -547,7 +575,7 @@
                 <span class="bar-name">{cat}</span>
                 <div class="bar-top-right">
                   <span class="bar-pct" style="color:{gaugeColor(val)}">{val}%</span>
-                  <span class="select-arrow">{selectedUpgradeCat === cat ? '▼' : '→'}</span>
+                  <span class="select-arrow">→</span>
                 </div>
               </div>
               <div class="bar-track">
@@ -556,49 +584,90 @@
             </button>
           {/each}
         </div>
+      </div>
+    </div>
+  {/if}
 
-        <!-- AI Upgrade Recommendations -->
-        {#if selectedUpgradeCat}
-          <div class="upgrade-results-section" in:fade={{ duration: 180 }}>
-            {#if upgradeState.stage === 'loading'}
-              <div class="upgrade-loading">
-                <div class="ai-pulse-sm">
-                  <span class="spark-big">{@html UI_ICONS.spark}</span>
-                </div>
-                <div class="loading-txt">Analyzing bottlenecks for <strong>{selectedUpgradeCat}</strong>...</div>
-              </div>
-            {:else if upgradeState.stage === 'done' && upgradeState.data}
-              <div class="upgrade-summary-box">
-                <span class="summary-icon">💡</span>
-                <span>{upgradeState.data.summary}</span>
-              </div>
+  <!-- Modal 2: Upgrade Analysis & Multi-Select Options -->
+  {#if upgradeResultsModalOpen}
+    <div class="modal-backdrop" on:click={closeAllUpgradeModals} transition:fade={{ duration: 150 }}>
+      <div class="modal upgrade-modal" on:click|stopPropagation transition:fly={{ y: 12, duration: 200 }}>
+        <div class="modal-header">
+          <button class="back-link-btn" on:click={backToCategorySelect}>← Select standard</button>
+          <button class="close-btn" on:click={closeAllUpgradeModals} aria-label="Close">✕</button>
+        </div>
 
-              <div class="upgrade-options-title">Recommended Upgrades (Click to explore):</div>
-              <div class="upgrade-cards-list">
-                {#each upgradeState.data.upgrades as upg}
-                  <button class="upgrade-card-btn" on:click={() => goToRedirect(upg.title, selectedUpgradeCat)}>
-                    <div class="card-header-row">
-                      <span class="comp-badge {upg.component.toLowerCase()}">{upg.component}</span>
-                      <span class="boost-badge">{upg.estimated_boost}</span>
+        <div class="modal-category-header">
+          <div class="modal-sub">Performance Target</div>
+          <div class="modal-cat-title">{selectedUpgradeCat}</div>
+        </div>
+
+        {#if upgradeState.stage === 'loading'}
+          <div class="upgrade-loading-modal" in:fade={{ duration: 150 }}>
+            <div class="analyzing-spinner">
+              <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="2" x2="12" y2="6"/>
+                <line x1="12" y1="18" x2="12" y2="22"/>
+                <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+                <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+                <line x1="2" y1="12" x2="6" y2="12"/>
+                <line x1="18" y1="12" x2="22" y2="12"/>
+                <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/>
+                <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>
+              </svg>
+            </div>
+            <div class="loading-title">Analyzing hardware bottlenecks…</div>
+            <div class="loading-sub">Evaluating specs for {selectedUpgradeCat}</div>
+          </div>
+        {:else if upgradeState.stage === 'done' && upgradeState.data}
+          <div class="upgrade-summary-box">
+            <span class="lightbulb-icon">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 18h6M10 22h4M15 14.5c.831-.734 1.5-1.93 1.5-3.5A4.5 4.5 0 0 0 7.5 11c0 1.57.669 2.766 1.5 3.5.5.44.86 1.01.86 1.7V17h4.28v-.8c0-.69.36-1.26.86-1.7z"/>
+              </svg>
+            </span>
+            <span>{upgradeState.data.summary}</span>
+          </div>
+
+          <div class="upgrade-options-title">Recommended Upgrades (Select all that apply):</div>
+          <div class="upgrade-cards-list">
+            {#each upgradeState.data.upgrades as upg}
+              {@const isSelected = selectedUpgrades.includes(upg.title)}
+              <button
+                class="upgrade-card-btn {isSelected ? 'selected' : ''}"
+                on:click={() => toggleUpgradeSelection(upg.title)}
+              >
+                <div class="card-header-row">
+                  <div class="header-left">
+                    <div class="custom-checkbox {isSelected ? 'checked' : ''}">
+                      {#if isSelected}✓{/if}
                     </div>
-                    <div class="card-item-title">{upg.title}</div>
-                    <div class="card-item-reason">{upg.reason}</div>
-                    <div class="card-action-bar">
-                      <span>Upgrade now</span>
-                      <span class="action-arrow">→</span>
-                    </div>
-                  </button>
-                {/each}
-              </div>
-            {:else if upgradeState.error}
-              <div class="unavailable">
-                <span class="icon-lg">{@html UI_ICONS.alert}</span>
-                <div>
-                  <div class="unavailable-title">Could not generate upgrade recommendations</div>
-                  <div class="unavailable-sub">{upgradeState.errorDetail}</div>
+                    <span class="comp-badge {upg.component.toLowerCase()}">{upg.component}</span>
+                  </div>
+                  <span class="boost-badge">{upg.estimated_boost}</span>
                 </div>
-              </div>
-            {/if}
+                <div class="card-item-title">{upg.title}</div>
+                <div class="card-item-reason">{upg.reason}</div>
+              </button>
+            {/each}
+          </div>
+
+          <div class="proceed-footer">
+            <button
+              class="proceed-btn"
+              disabled={!selectedUpgrades.length}
+              on:click={proceedWithSelectedUpgrades}
+            >
+              Proceed {selectedUpgrades.length ? `(${selectedUpgrades.length} selected)` : ''} →
+            </button>
+          </div>
+        {:else if upgradeState.error}
+          <div class="unavailable">
+            <span class="icon-lg">{@html UI_ICONS.alert}</span>
+            <div>
+              <div class="unavailable-title">Could not generate upgrade recommendations</div>
+              <div class="unavailable-sub">{upgradeState.errorDetail}</div>
+            </div>
           </div>
         {/if}
       </div>
@@ -1364,52 +1433,80 @@
   }
 
   /* ── Upgrade Button & Modal Styles ── */
-  .panel-header-between {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    width: 100%;
+  .panel-bottom-action {
+    margin-top: 14px;
   }
 
-  .upgrade-trigger-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background: linear-gradient(135deg, #ff6b00 0%, #ff8c00 100%);
+  .upgrade-pc-btn {
+    width: 100%;
+    padding: 11px 16px;
+    background: #111111;
     color: #ffffff;
     border: none;
-    border-radius: 4px;
-    padding: 4px 10px;
+    border-radius: 6px;
     font-family: var(--font-display);
-    font-size: 12px;
-    font-weight: 700;
+    font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
-    box-shadow: 0 2px 6px rgba(255, 107, 0, 0.25);
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    transition: background 0.15s ease, transform 0.1s ease;
   }
 
-  .upgrade-trigger-btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(255, 107, 0, 0.35);
+  .upgrade-pc-btn:hover {
+    background: var(--accent);
   }
 
-  .upgrade-trigger-btn:active {
-    transform: scale(0.96);
+  .upgrade-pc-btn:active {
+    transform: scale(0.98);
   }
 
-  .bolt {
+  .battery-upgrade-action {
+    margin-top: 10px;
+  }
+
+  .upgrade-battery-btn {
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--font-mono);
     font-size: 11px;
-  }
-
-  .modal-title-with-bolt {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    font-weight: 600;
     color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s ease;
   }
 
-  .bolt-title {
+  .upgrade-battery-btn:hover {
+    border-color: var(--accent);
     color: var(--accent);
+    background: rgba(255, 107, 0, 0.04);
+  }
+
+  .back-link-btn {
+    background: none;
+    border: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .back-link-btn:hover {
+    text-decoration: underline;
+  }
+
+  .modal-category-header {
+    margin-bottom: 14px;
+  }
+
+  .modal-cat-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text);
+    margin-top: 2px;
   }
 
   /* Pulse Box Container */
@@ -1438,11 +1535,6 @@
     display: flex;
     align-items: center;
     gap: 10px;
-  }
-
-  .pulse-spark {
-    font-size: 20px;
-    color: var(--accent);
   }
 
   .pulse-title {
@@ -1478,12 +1570,6 @@
     background: #fff9f4;
   }
 
-  .bar-row-interactive.selected {
-    border-color: var(--accent);
-    background: rgba(255, 107, 0, 0.08);
-    box-shadow: 0 2px 8px rgba(255, 107, 0, 0.15);
-  }
-
   .bar-top-right {
     display: flex;
     align-items: center;
@@ -1496,32 +1582,23 @@
     transition: color 0.15s ease;
   }
 
-  .bar-row-interactive:hover .select-arrow,
-  .bar-row-interactive.selected .select-arrow {
+  .bar-row-interactive:hover .select-arrow {
     color: var(--accent);
   }
 
-  .upgrade-results-section {
-    border-top: 1px solid var(--border);
-    padding-top: 14px;
-    margin-top: 10px;
-  }
-
-  .upgrade-loading {
+  .upgrade-loading-modal {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 12px;
-    padding: 16px;
-    background: #fafafa;
-    border-radius: 8px;
-    border: 1px dashed var(--border2);
+    justify-content: center;
+    padding: 36px 16px;
+    text-align: center;
   }
 
-  .ai-pulse-sm {
-    width: 24px;
-    height: 24px;
+  .analyzing-spinner {
     color: var(--accent);
-    animation: spin 1.5s infinite linear;
+    margin-bottom: 12px;
+    animation: spin 2s infinite linear;
   }
 
   @keyframes spin {
@@ -1529,14 +1606,9 @@
     100% { transform: rotate(360deg); }
   }
 
-  .loading-txt {
-    font-size: 12px;
-    color: var(--text2);
-  }
-
   .upgrade-summary-box {
     display: flex;
-    gap: 8px;
+    gap: 10px;
     align-items: flex-start;
     background: rgba(255, 107, 0, 0.06);
     border-left: 3px solid var(--accent);
@@ -1548,9 +1620,12 @@
     margin-bottom: 14px;
   }
 
-  .summary-icon {
-    font-size: 14px;
+  .lightbulb-icon {
+    color: var(--accent);
+    display: flex;
+    align-items: center;
     flex-shrink: 0;
+    margin-top: 1px;
   }
 
   .upgrade-options-title {
@@ -1586,15 +1661,45 @@
 
   .upgrade-card-btn:hover {
     border-color: var(--accent);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(255, 107, 0, 0.16);
-    background: #fffcfa;
+    background: #fffaf5;
+  }
+
+  .upgrade-card-btn.selected {
+    border-color: var(--accent);
+    background: #fff8f2;
+    box-shadow: 0 4px 12px rgba(255, 107, 0, 0.14);
   }
 
   .card-header-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .custom-checkbox {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1.5px solid var(--border2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 800;
+    color: #ffffff;
+    background: #ffffff;
+    transition: all 0.15s ease;
+  }
+
+  .custom-checkbox.checked {
+    background: var(--accent);
+    border-color: var(--accent);
   }
 
   .comp-badge {
@@ -1609,9 +1714,8 @@
   }
 
   .comp-badge.ram { background: #e0f2fe; color: #0369a1; }
-  .comp-badge.gpu { background: #fef3c7; color: #b45309; }
-  .comp-badge.cpu { background: #fce7f3; color: #be185d; }
   .comp-badge.storage { background: #dcfce7; color: #15803d; }
+  .comp-badge.battery { background: #fef3c7; color: #b45309; }
 
   .boost-badge {
     font-family: var(--font-mono);
@@ -1635,23 +1739,35 @@
     line-height: 1.4;
   }
 
-  .card-action-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 11px;
+  .proceed-footer {
+    margin-top: 18px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .proceed-btn {
+    width: 100%;
+    padding: 12px 16px;
+    background: var(--accent);
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    font-family: var(--font-display);
+    font-size: 14px;
     font-weight: 700;
-    color: var(--accent);
-    margin-top: 4px;
-    padding-top: 6px;
-    border-top: 1px stroke var(--border);
+    cursor: pointer;
+    transition: opacity 0.15s ease, background 0.15s ease, transform 0.1s ease;
   }
 
-  .action-arrow {
-    transition: transform 0.15s ease;
+  .proceed-btn:hover:not(:disabled) {
+    background: #e66000;
+    transform: translateY(-1px);
   }
 
-  .upgrade-card-btn:hover .action-arrow {
-    transform: translateX(4px);
+  .proceed-btn:disabled {
+    background: #e5e5e5;
+    color: #999999;
+    cursor: not-allowed;
+    opacity: 0.7;
   }
 </style>

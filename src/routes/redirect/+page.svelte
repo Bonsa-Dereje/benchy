@@ -5,12 +5,15 @@
   import { page } from '$app/stores'
   import logo from '../../assets/logo.png'
 
-  let upgradeItem = 'Upgrade Hardware'
-  let category = 'General'
+  let upgradeItems = []
+  let category = 'PC performance'
 
   $: {
     if ($page.url.searchParams.has('item')) {
-      upgradeItem = $page.url.searchParams.get('item')
+      const raw = $page.url.searchParams.get('item')
+      upgradeItems = raw.split('|').filter(Boolean)
+    } else {
+      upgradeItems = ['Hardware Upgrade']
     }
     if ($page.url.searchParams.has('category')) {
       category = $page.url.searchParams.get('category')
@@ -40,7 +43,11 @@
 
     <div class="spinner-container">
       <div class="pulse-ring"></div>
-      <div class="spark-icon">⚡</div>
+      <div class="spark-icon">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#ff6b00" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+        </svg>
+      </div>
     </div>
 
     <h1 class="title">Redirecting to MakeDo site...</h1>
@@ -48,8 +55,12 @@
 
     <div class="details-box">
       <div class="detail-row">
-        <span class="detail-label">Requested Upgrade</span>
-        <span class="detail-val highlight">{upgradeItem}</span>
+        <span class="detail-label">Requested Upgrade{upgradeItems.length > 1 ? 's (' + upgradeItems.length + ')' : ''}</span>
+        <div class="upgrade-list">
+          {#each upgradeItems as item}
+            <div class="upgrade-pill">{item}</div>
+          {/each}
+        </div>
       </div>
       <div class="detail-row">
         <span class="detail-label">Target Standard</span>
@@ -182,7 +193,9 @@
   }
 
   .spark-icon {
-    font-size: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .title {
@@ -206,7 +219,7 @@
     padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 14px;
     margin-bottom: 28px;
     text-align: left;
   }
@@ -214,7 +227,7 @@
   .detail-row {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
   }
 
   .detail-label {
@@ -225,14 +238,26 @@
     letter-spacing: 0.05em;
   }
 
+  .upgrade-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .upgrade-pill {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    background: rgba(255, 107, 0, 0.08);
+    border: 1px solid rgba(255, 107, 0, 0.2);
+    padding: 6px 10px;
+    border-radius: 6px;
+  }
+
   .detail-val {
     font-size: 14px;
     font-weight: 600;
     color: var(--text);
-  }
-
-  .detail-val.highlight {
-    color: var(--accent);
   }
 
   .status-badge {

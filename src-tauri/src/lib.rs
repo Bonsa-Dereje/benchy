@@ -560,7 +560,9 @@ pub struct UpgradeAdviceResponse {
 }
 
 const UPGRADE_SYSTEM_PROMPT: &str = r#"You are a PC hardware optimization expert.
-Given a user's machine specs and a target use-case category to improve (e.g. Graphic Design, Video Editing, Gaming, etc.), analyze the system hardware bottlenecks and recommend 2 to 4 concrete, realistic hardware upgrades.
+Given a user's machine specs and a target use-case category to improve (e.g. Graphic Design, Video Editing, Gaming, etc.), analyze the system hardware bottlenecks and recommend 1 to 3 concrete, realistic hardware upgrades.
+
+CRITICAL RULE: You MUST ONLY suggest upgrades for RAM, Storage (SSD), or Battery replacement. Do NOT suggest upgrading GPU or CPU (as laptop/PC GPUs and CPUs are fixed/non-upgradable).
 
 You MUST reply with ONLY a JSON object (no markdown formatting, no markdown code blocks) matching this exact schema:
 {
@@ -568,7 +570,7 @@ You MUST reply with ONLY a JSON object (no markdown formatting, no markdown code
   "upgrades": [
     {
       "title": "<Actionable title e.g. 'Add 8GB RAM (Upgrade to 16GB)'>",
-      "component": "<RAM | GPU | CPU | Storage>",
+      "component": "<RAM | Storage | Battery>",
       "reason": "<1 concise sentence on how this upgrade helps>",
       "estimated_boost": "<Estimated score or speed boost, e.g. '+25% speed'>"
     }
@@ -578,12 +580,6 @@ You MUST reply with ONLY a JSON object (no markdown formatting, no markdown code
 
 fn local_upgrade_heuristic(specs: &SystemSpecs, category: &str) -> UpgradeAdviceResponse {
     let ram = specs.ram_total_gb;
-    let gpu_lower = specs.gpu_name.to_lowercase();
-    let has_dedicated_gpu = !gpu_lower.contains("intel(r) uhd")
-        && !gpu_lower.contains("intel iris")
-        && !gpu_lower.contains("integrated")
-        && !gpu_lower.contains("unknown");
-
     let mut upgrades = Vec::new();
 
     if ram < 16.0 {
@@ -602,24 +598,8 @@ fn local_upgrade_heuristic(specs: &SystemSpecs, category: &str) -> UpgradeAdvice
         });
     }
 
-    if !has_dedicated_gpu {
-        upgrades.push(UpgradeItem {
-            title: "Upgrade to Dedicated GPU (6GB+ VRAM)".to_string(),
-            component: "GPU".to_string(),
-            reason: format!("Integrated graphics ({}) lacks hardware acceleration for heavy workflows.", specs.gpu_name),
-            estimated_boost: "+45% graphics rendering score".to_string(),
-        });
-    } else if category.contains("LLM") || category.contains("3D") || category.contains("Gaming") {
-        upgrades.push(UpgradeItem {
-            title: "Upgrade to High-VRAM GPU (12GB+ VRAM)".to_string(),
-            component: "GPU".to_string(),
-            reason: "Demanding 3D rendering and local AI models require expanded GPU VRAM memory.".to_string(),
-            estimated_boost: "+35% AI & 3D speed".to_string(),
-        });
-    }
-
     if let Some(disk) = specs.disks.first() {
-        if disk.kind.to_lowercase().contains("hdd") || disk.available_gb < 50.0 {
+        if disk.kind.to_lowercase().contains("hdd") || disk.available_gb < 100.0 {
             upgrades.push(UpgradeItem {
                 title: "Add 1TB High-Speed NVMe SSD".to_string(),
                 component: "Storage".to_string(),
@@ -629,19 +609,28 @@ fn local_upgrade_heuristic(specs: &SystemSpecs, category: &str) -> UpgradeAdvice
         }
     }
 
-    if upgrades.is_empty() || specs.cpu_cores < 8 {
+    if upgrades.len() < 2 {
         upgrades.push(UpgradeItem {
-            title: "Upgrade CPU (8+ Cores / 16 Threads)".to_string(),
-            component: "CPU".to_string(),
-            reason: format!("Your {} CPU ({} cores) handles multi-threaded processing.", specs.cpu_brand, specs.cpu_cores),
-            estimated_boost: "+25% multi-threaded speed".to_string(),
+            title: "Expand Primary NVMe SSD Storage".to_string(),
+            component: "Storage".to_string(),
+            reason: "Provides high-throughput scratch space and faster application load times.".to_string(),
+            estimated_boost: "+25% system responsiveness".to_string(),
+        });
+    }
+
+    if category.contains("Battery") || category.contains("Everyday") || category.contains("Study") {
+        upgrades.push(UpgradeItem {
+            title: "Replace / Upgrade High-Capacity Battery Pack".to_string(),
+            component: "Battery".to_string(),
+            reason: "Restores full design charge capacity and extends portable runtime.".to_string(),
+            estimated_boost: "+50% unplugged battery life".to_string(),
         });
     }
 
     UpgradeAdviceResponse {
         category: category.to_string(),
-        summary: format!("Based on your specs ({:.0}GB RAM, {}), here are the recommended upgrades to improve {} performance.", 
-            ram, specs.gpu_name, category),
+        summary: format!("Based on your specs ({:.0}GB RAM), here are the recommended upgradable components to improve {} performance.", 
+            ram, category),
         upgrades,
         estimator: "fallback".to_string(),
         error_detail: None,
@@ -654,7 +643,7 @@ async fn get_upgrade_advice(
     category: String,
 ) -> Result<UpgradeAdviceResponse, String> {
     let spec_summary = build_spec_summary(&specs);
-    let user_text = format!("Machine specs:\n{}\n\nTarget category to improve: {}\nProvide hardware upgrade recommendations.", spec_summary, category);
+    let user_text = format!("Machine specs:\n{}\n\nTarget category to improve: {}\nProvide hardware upgrade recommendations for RAM, Storage, or Battery only.", spec_summary, category);
 
     let models: Vec<&str> = std::iter::once(GROQ_MODEL)
         .chain(GROQ_FALLBACKS.iter().copied())
@@ -688,12 +677,15 @@ async fn get_upgrade_advice(
                                         item.get("reason").and_then(|v| v.as_str()),
                                         item.get("estimated_boost").and_then(|v| v.as_str()),
                                     ) {
-                                        upgrades.push(UpgradeItem {
-                                            title: t.to_string(),
-                                            component: c.to_string(),
-                                            reason: r.to_string(),
-                                            estimated_boost: b.to_string(),
-                                        });
+                                        let comp_upper = c.to_uppercase();
+                                        if !comp_upper.contains("GPU") && !comp_upper.contains("CPU") {
+                                            upgrades.push(UpgradeItem {
+                                                title: t.to_string(),
+                                                component: c.to_string(),
+                                                reason: r.to_string(),
+                                                estimated_boost: b.to_string(),
+                                            });
+                                        }
                                     }
                                 }
                                 if !upgrades.is_empty() {
@@ -701,7 +693,7 @@ async fn get_upgrade_advice(
                                         category,
                                         summary,
                                         upgrades,
-                                        estimator: "ai".to_string(),
+                                        estimator: "estimator".to_string(),
                                         error_detail: None,
                                     });
                                 }
